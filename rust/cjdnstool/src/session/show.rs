@@ -1,3 +1,6 @@
+use cjdns::bencode::object::{Dict, Get as _};
+use eyre::Result;
+
 use crate::{
     common::{
         args::CommonArgs,
@@ -5,8 +8,6 @@ use crate::{
     },
     session::util::print_metric,
 };
-use cjdns::bencode::object::{Dict,Get};
-use eyre::Result;
 
 pub async fn show(common: CommonArgs, ip6: bool) -> Result<()> {
     fn no_v(session: &Session) -> &str {
@@ -20,9 +21,7 @@ pub async fn show(common: CommonArgs, ip6: bool) -> Result<()> {
     loop {
         let mut args = Dict::new();
         args.insert("page", page);
-        let resp = cjdns
-            .invoke("SessionManager_getHandles", args)
-            .await?;
+        let resp = cjdns.invoke("SessionManager_getHandles", args).await?;
         for handle in resp.get_list("handles")?.iter() {
             handles.push(handle.try_into()?);
         }

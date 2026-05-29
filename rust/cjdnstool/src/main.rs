@@ -1,13 +1,20 @@
 mod cexec;
 mod common;
 mod peers;
+mod ping;
+mod route;
 mod session;
 mod util;
-mod route;
-mod ping;
+
+use std::{
+    future::Future,
+    io::{self, IsTerminal as _, stderr},
+    process::{ExitCode, Termination},
+};
 
 use clap::{Parser, Subcommand};
-use std::process::{ExitCode, Termination};
+use color_eyre::config::{HookBuilder, Theme};
+use tokio::runtime::Runtime;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -38,37 +45,46 @@ enum Command {
         command: Option<peers::Command>,
     },
 
+    /// Send a cjdns ping to a node.
     #[command(long_about = Some(ping::LONG_ABOUT))]
     Ping {
-        /// Send this type of ping message, default: "router"
-        #[arg(short = 't', long = "type")]
+        /// Send this type of ping message, default: "router".
+        #[arg(short = 't', long = "type", value_name = "TYPE")]
         typ: Option<ping::Type>,
 
-        /// resolve the path using this method, default: "default"
+        /// Resolve the path using this method, default: "default".
         #[arg(short = 'r', long)]
         resolve: Option<ping::Resolve>,
- 
-        /// stop after <count> replies
+
+        /// Stop after <count> replies.
         #[arg(short = 'c', long)]
         count: Option<u32>,
 
-        /// number of data bytes to be sent, default: pattern.len() or zero
+        /// Number of data bytes to be sent, default: pattern.len() or zero.
         #[arg(short = 'l', long)]
         length: Option<u16>,
 
-        /// hex data pattern, default: --length random bytes, if length > pattern.len(), pattern is repeated
+        /// Hex data pattern, default: --length random bytes, if length > pattern.len(), pattern is repeated.
         #[arg(short = 'p', long)]
         pattern: Option<String>,
 
         /// Display additional data, including the entire response in the case of router ping
+        ///
+        /// Note: For the ping subcommand in particular, the placement of this flag is important.
+        ///
+        /// In order for it to influence the router ping response, rather than the logging of client side events,
+        /// it should be passed AFTER the ping subcommand.
+        ///
+        /// It is possible to apply the flag twice separately, both before and after,
+        /// in which case both behaviors will be influenced.
         #[arg(short = 'v', long)]
         verbose: bool,
 
-        /// destination path, address, or IPv6
+        /// Destination path, address, or IPv6.
         dest: String,
     },
 
-    /// Get route to destination
+    /// Get route to destination.
     Route {
         #[command(subcommand)]
         command: route::Command,
@@ -87,46 +103,84 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> MainResult {
-    use Command::*;
+fn main() -> MainResult {
+    // Realistically should always succeed, but
+    if let Err(error) = install_eyre_hook() {
+        eprintln!("Error installing eyre hook: {error}");
+    }
+
+    if let Err(error) = dotenvy::dotenv()
+        && !error.not_found()
+    {
+        eprintln!("Error parsing .env file(s): {error}");
+    }
+
     match Args::try_parse() {
-        Ok(args) => match args.command {
-            Cexec {
-                rpc,
-                args: rpc_args,
-            } => cexec::cexec(args.common, rpc, rpc_args).await.into(),
-            Peers { command } => peers::peers(args.common, command.unwrap_or_default())
-                .await
+        Ok(args) => {
+            use Command::*;
+
+            if let Err(error) = args.common.init_logger() {
+                eprintln!("Error initializing logger: {error}");
+            }
+
+            match args.command {
+                Cexec {
+                    rpc,
+                    args: rpc_args,
+                } => with_tokio(cexec::cexec(args.common, rpc, rpc_args)).into(),
+
+                Peers { command } => {
+                    with_tokio(peers::peers(args.common, command.unwrap_or_default())).into()
+                }
+
+                Ping {
+                    typ,
+                    resolve,
+                    count,
+                    length,
+                    pattern,
+                    dest,
+                    verbose,
+                } => with_tokio(ping::ping(
+                    args.common,
+                    typ,
+                    resolve,
+                    count,
+                    length,
+                    pattern,
+                    verbose,
+                    dest,
+                ))
                 .into(),
-            Ping { typ, resolve, count, length, pattern, dest, verbose } => {
-                ping::ping(args.common, typ, resolve, count, length, pattern, verbose, dest).await.into()
-            },
-            Route { command } => route::route(args.common, command).await.into(),
-            Session { command } => session::session(args.common, command.unwrap_or_default())
-                .await
-                .into(),
-            Util { command } => util::util(command).await.into(),
-        },
+
+                Route { command } => with_tokio(route::route(args.common, command)).into(),
+
+                Session { command } => {
+                    with_tokio(session::session(args.common, command.unwrap_or_default())).into()
+                }
+
+                Util { command } => util::util(command).into(),
+            }
+        }
         Err(err) => err.into(),
     }
 }
 
 enum MainResult {
     Success,
-    ClapError(clap::error::Error),
-    AnyhowError(eyre::Error),
+    ArgParseError(clap::error::Error),
+    RuntimeError(eyre::Error),
 }
 
 impl From<clap::error::Error> for MainResult {
     fn from(value: clap::error::Error) -> Self {
-        MainResult::ClapError(value)
+        MainResult::ArgParseError(value)
     }
 }
 
 impl From<eyre::Error> for MainResult {
     fn from(value: eyre::Error) -> Self {
-        MainResult::AnyhowError(value)
+        MainResult::RuntimeError(value)
     }
 }
 
@@ -143,18 +197,34 @@ impl Termination for MainResult {
     fn report(self) -> ExitCode {
         match self {
             Self::Success => ExitCode::SUCCESS,
-            Self::ClapError(err) => {
+
+            Self::ArgParseError(err) => {
                 err.print().expect("Failed to print diagnostic message");
                 ExitCode::from(err.exit_code() as u8)
             }
-            Self::AnyhowError(err) => {
+
+            Self::RuntimeError(err) => {
                 let exe = common::utils::exe_name();
-                eprintln!("{exe}: {err}");
-                for cause in err.chain().skip(1) {
-                    eprintln!(" - {cause}");
-                }
+                eprintln!("{exe}: {err:?}"); // Assuming `install_eyre_hook` succeeds
                 ExitCode::FAILURE
             }
         }
     }
+}
+
+fn install_eyre_hook() -> eyre::Result<()> {
+    let mut builder = HookBuilder::new();
+    if !stderr().is_terminal() {
+        builder = builder.theme(Theme::new());
+    }
+    builder.install()
+}
+
+fn with_tokio<T, E, F>(future: F) -> Result<T, E>
+where
+    E: From<io::Error>,
+    F: 'static + Future<Output = Result<T, E>> + Send + Sync,
+{
+    let rt = Runtime::new()?;
+    rt.block_on(future)
 }

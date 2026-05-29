@@ -1,10 +1,11 @@
+use cjdns::bencode::object::{Dict, Get as _};
+use eyre::Result;
+use serde::Deserialize;
+
 use crate::common::{
     args::CommonArgs,
     utils::{self, PushField},
 };
-use eyre::Result;
-use serde::Deserialize;
-use cjdns::bencode::object::{Dict,Get};
 
 pub async fn show(common: CommonArgs, ip6: bool) -> Result<()> {
     let mut cjdns = cjdns::admin::connect(Some(common.as_anon())).await?;
@@ -13,9 +14,7 @@ pub async fn show(common: CommonArgs, ip6: bool) -> Result<()> {
     loop {
         let mut args = Dict::new();
         args.insert("page", page);
-        let resp = cjdns
-            .invoke("InterfaceController_peerStats", args)
-            .await?;
+        let resp = cjdns.invoke("InterfaceController_peerStats", args).await?;
         for peer in resp.get_list("peers")?.iter() {
             let peer: Peer = peer.as_dict()?.try_into()?;
             let addr = if ip6 {
