@@ -1,8 +1,8 @@
 use std::{net::Ipv6Addr, str::FromStr as _};
 
 use cjdns::{
-    admin::Connection,
-    bencode::object::{Dict, Get as _},
+    admin::{Connection, cjdns_invoke, dict},
+    bencode::object::Get as _,
     core::{Address, DefaultRoutingLabel},
     keys::{CJDNS_IP6, CJDNSPublicKey},
 };
@@ -21,19 +21,17 @@ pub struct Route {
 }
 
 pub async fn get_snode(cjdns: &mut Connection) -> Result<Option<String>> {
-    let ret = cjdns.invoke("SupernodeHunter_status", Dict::new()).await?;
+    let ret = cjdns_invoke!(cjdns, "SupernodeHunter_status").await?;
     ret.try_get_string("activeSnode")
 }
 
 pub async fn get_self_addr(cjdns: &mut Connection) -> Result<String> {
-    let ret = cjdns.invoke("Core_nodeInfo", Dict::new()).await?;
+    let ret = cjdns_invoke!(cjdns, "Core_nodeInfo").await?;
     ret.get_string("myIp6")
 }
 
 pub async fn route_from_session(cjdns: &mut Connection, ip6: &str) -> Result<Option<Route>> {
-    let mut args = Dict::new();
-    args.insert("ip6", ip6);
-    let resp = match cjdns.invoke("SessionManager_sessionStatsByIP", args).await {
+    let resp = match cjdns_invoke!(cjdns, "SessionManager_sessionStatsByIP", ip6).await {
         Ok(resp) => resp,
         Err(e) => {
             if e.to_string().contains("no such session") {
@@ -75,17 +73,13 @@ pub async fn route_from_snode(
         .map_err(|_| eyre!("Invalid src IPv6 address"))?
         .octets();
 
-    let mut sargs = Dict::new();
-    sargs.insert("q", "sq");
-    sargs.insert("sq", "gr");
-    sargs.insert("src", &src[..]);
-    sargs.insert("tar", &dst[..]);
-
-    let mut args = Dict::new();
-    args.insert("address", snode);
-    args.insert("args", sargs);
-
-    let resp = cjdns.invoke("SubnodePathfinder_queryNode", args).await?;
+    let resp = cjdns_invoke!(
+        cjdns,
+        "SubnodePathfinder_queryNode",
+        address = snode,
+        args = dict!(q = "sq", sq = "gr", src = &src[..], tar = &dst[..]),
+    )
+    .await?;
 
     let sres = resp.get_dict("response")?;
     if !sres.has("recvTime") {

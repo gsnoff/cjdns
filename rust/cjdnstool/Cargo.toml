@@ -10,6 +10,7 @@ description = "Command line tool for querying cjdns admin API."
 rust-version = { workspace = true }
 
 [dependencies]
+chrono = { workspace = true }
 cjdns = { workspace = true }
 clap = { workspace = true }
 color-eyre = { workspace = true }
@@ -24,4 +25,5 @@ rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+strum = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

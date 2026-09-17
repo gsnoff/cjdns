@@ -1,6 +1,7 @@
 use std::{net::Ipv6Addr, time::Duration};
 
 use cjdns::{
+    admin::{cjdns_invoke, dict},
     bencode::object::{Dict, Get as _},
     bytes::message::Message,
     core::{Address, DefaultRoutingLabel},
@@ -84,16 +85,16 @@ pub async fn router_ping(
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
-        let mut nargs = Dict::new();
-        nargs.insert("q", "pn");
-        if !data.is_empty() {
-            nargs.insert("txid", &data[..]);
-        }
-        let mut args = Dict::new();
-        args.insert("address", &astr);
-        args.insert("args", nargs);
-        // println!("Query Node");
-        let res = match cjdns.invoke("SubnodePathfinder_queryNode", args).await {
+        let txid = (!data.is_empty()).then(|| &data[..]);
+        log::trace!("Query Node");
+        let res = match cjdns_invoke!(
+            cjdns,
+            "SubnodePathfinder_queryNode",
+            address = &astr,
+            args = dict!(q = "pn", txid?),
+        )
+        .await
+        {
             Ok(res) => res,
             Err(e) => {
                 if e.to_string().contains("Timeout") {
@@ -338,8 +339,8 @@ pub async fn ping(
             let Some(path) = path else {
                 bail!("No known path, cannot switch ping");
             };
-            let mut args = Dict::new();
-            args.insert("path", path.to_string());
+            let data = (!pattern.is_empty()).then_some(pattern);
+            let mut args = dict!(path = path.to_string(), data?);
             // cjdnstool cexec SwitchPinger_ping --path=<String> [--data=<String>] [--keyPing=<Int>] [--lladdr=<Int>] [--rpath=<Int>] [--snode=<Int>] [--timeout=<Int>]
             match typ {
                 Type::Getkey => args.insert("keyPing", 1),
@@ -347,9 +348,6 @@ pub async fn ping(
                 Type::Rpath => args.insert("rpath", 1),
                 Type::Snode => args.insert("snode", 1),
                 _ => (),
-            }
-            if !pattern.is_empty() {
-                args.insert("data", pattern);
             }
             return switch_ping(&mut cjdns, args, count, verbose).await;
         }

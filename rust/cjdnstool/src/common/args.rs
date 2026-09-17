@@ -1,4 +1,6 @@
-use cjdns::admin::Opts;
+use std::mem;
+
+use cjdns::admin::{EndpointType, Opts};
 use clap::Args;
 use const_format::formatcp;
 use env_logger::Env;
@@ -47,12 +49,22 @@ pub struct CommonArgs {
     quiet: u8,
 
     /// Remote IP address (either IPv4 or IPv6).
-    #[arg(short = 'a', long, value_name = "IP")]
+    #[arg(short = 'a', long, value_name = "IP", conflicts_with = "pipe")]
     address: Option<String>,
 
     /// Remote UDP port.
-    #[arg(short = 'p', long, value_name = "PORT")]
+    #[arg(short = 'p', long, value_name = "PORT", conflicts_with = "pipe")]
     port: Option<u16>,
+
+    /// Path to local socket or pipe, or hyphen (-) for default (cjdroute.sock)
+    ///
+    /// Can be relative to default paths depending on platform:
+    ///  - $XDG_RUNTIME_DIR or /run on GNU/Linux
+    ///  - $TMPDIR, $HOME or /data/local/tmp on Android
+    ///  - /var/run on other Unix and Unix-like systems (macOS, FreeBSD etc.)
+    ///  - \\.\pipe on Windows
+    #[arg(short = 'x', long, value_name = "PATH", verbatim_doc_comment)]
+    pipe: Option<String>,
 
     /// Connection password for cjdns instance.
     #[arg(short = 'P', long, value_name = "PASSWORD")]
@@ -89,22 +101,30 @@ impl CommonArgs {
 
     #[allow(clippy::wrong_self_convention)]
     pub fn as_anon(self) -> Opts {
+        let typ = if self.address.is_some() || self.port.is_some() {
+            Some(EndpointType::Udp)
+        } else if self.pipe.is_some() {
+            Some(EndpointType::Pipe)
+        } else {
+            None
+        };
+
         Opts {
+            typ,
             addr: self.address,
             port: self.port,
+            path: self.pipe.filter(|p| p != "-"),
             password: None,
             config_file_path: self.cjdnsadmin,
             anon: true,
         }
     }
 
-    pub fn with_auth(self) -> Opts {
+    pub fn with_auth(mut self) -> Opts {
         Opts {
-            addr: self.address,
-            port: self.port,
-            password: Some(self.password.unwrap_or_else(|| "NONE".to_owned())),
-            config_file_path: self.cjdnsadmin,
+            password: Some(mem::take(&mut self.password).unwrap_or_else(|| "NONE".to_owned())),
             anon: false,
+            ..self.as_anon()
         }
     }
 }

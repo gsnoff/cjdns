@@ -1,5 +1,6 @@
 mod cexec;
 mod common;
+mod log;
 mod peers;
 mod ping;
 mod route;
@@ -37,6 +38,40 @@ enum Command {
         /// Arguments to the specified RPC, in the form --name=value.
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+
+    /// Stream event logs from CJDNS instance to stdout.
+    ///
+    /// Once streaming, press Ctrl+C (or send SIGINT on Unix) to stop gracefully.
+    Log {
+        /// Log verbosity level.
+        ///
+        /// If present, instance event with deeper verbosity levels than specified will be filtered out.
+        ///
+        /// Note: For the log subcommand, the placement of the short form of this flag is important.
+        ///
+        /// In order for it to influence the logging of instance events, rather than client side events,
+        /// it should be passed AFTER the log subcommand.
+        #[arg(short = 'v', long, value_name = "LEVEL", ignore_case = true)]
+        verbosity: Option<log::Verbosity>,
+
+        /// CJDNS source code file name, e.g. "CryptoAuth.c".
+        ///
+        /// If present, only instance events fired from a function defined within the source file
+        /// with the matching name will be displayed.
+        #[arg(short = 'f', long, value_name = "NAME")]
+        file: Option<String>,
+
+        /// Line number in source code file.
+        ///
+        /// If present, only instance events fired from a line with the matching line number
+        /// will be displayed.
+        #[arg(short = 'l', long, value_name = "NUM")]
+        line: Option<u64>,
+
+        /// Output human-readable time (RFC 3339 / ISO 8601) instead of Unix timestamps.
+        #[arg(short = 'H', long)]
+        human_time: bool,
     },
 
     /// Perform operations with cjdns peers (show current peers by default).
@@ -128,6 +163,13 @@ fn main() -> MainResult {
                     rpc,
                     args: rpc_args,
                 } => with_tokio(cexec::cexec(args.common, rpc, rpc_args)).into(),
+
+                Log {
+                    verbosity,
+                    file,
+                    line,
+                    human_time,
+                } => with_tokio(log::log(args.common, verbosity, file, line, human_time)).into(),
 
                 Peers { command } => {
                     with_tokio(peers::peers(args.common, command.unwrap_or_default())).into()
